@@ -56,6 +56,8 @@ class PGoApi:
         self._posf = (0,0,0)
         self.MIN_KEEP_IV = config.get("MIN_KEEP_IV", 0)
         self.KEEP_CP_OVER = config.get("KEEP_CP_OVER", 0)
+	self.RELEASE_DUPLICATES = config.get("RELEASE_DUPLICATE", 0)
+	self.DUPLICATE_CP_FORGIVENESS = config.get("DUPLICATE_CP_FOREGIVENESS", 0)
         self._req_method_list = []
         self._heartbeat_number = 5
         self.pokemon_names = pokemon_names
@@ -148,13 +150,20 @@ class PGoApi:
                 res['responses']['lat'] = self._posf[0]
                 res['responses']['lng'] = self._posf[1]
                 f.write(json.dumps(res['responses'], indent=2))
-            self.log.info(get_inventory_data(res, self.pokemon_names))
+            #self.log.info(get_inventory_data(res, self.pokemon_names))
             self.log.debug(self.cleanup_inventory(res['responses']['GET_INVENTORY']['inventory_delta']['inventory_items']))
 
         self._heartbeat_number += 1
         return res
     def walk_to(self,loc):
-        steps = get_route(self._posf, loc, self.config.get("USE_GOOGLE", False), self.config.get("GMAPS_API_KEY", ""))
+        try:
+            steps = get_route(self._posf, loc, self.config.get("USE_GOOGLE", False), self.config.get("GMAPS_API_KEY", ""))
+        except Exception as e:
+            try:
+                steps = get_route(self._posf, loc, self.config.get("USE_GOOGLE", False), self.config.get("GMAPS_API_KEY_SECONDARY", ""))
+            except Exception as e:
+                steps = get_route(self._posf, loc, self.config.get("USE_GOOGLE", False), self.config.get("GMAPS_API_KEY_TERTIARY", ""))
+
         for step in steps:
             for i,next_point in enumerate(get_increments(self._posf,step,self.config.get("STEP_SIZE", 200))):
                 self.set_position(*next_point)
@@ -208,8 +217,8 @@ class PGoApi:
         neighbors = getNeighbors(self._posf)
         return self.get_map_objects(latitude=position[0], longitude=position[1], since_timestamp_ms=[0]*len(neighbors), cell_id=neighbors).call()
     
-    def attempt_catch(self,encounter_id,spawn_point_guid): #Problem here... add 4 if you have master ball
-        for i in range(1,3): # Range 1...4 iff you have master ball `range(1,4)`
+    def attempt_catch(self,encounter_id,spawn_point_guid): #Problem here... add 5 if you have master ball
+        for i in range(1,5): # Range 1...5 if you have master ball `range(1,5)`
             r = self.catch_pokemon(
                 normalized_reticle_size= 1.950,
                 pokeball = i,
@@ -253,6 +262,31 @@ class PGoApi:
                         self.log.info("Releasing pokemon: %s IV: %s", self.pokemon_names[str(pokemon['pokemon_id'])], pokemonIVPercentage(pokemon))
                         self.release_pokemon(pokemon_id = pokemon["id"])
 
+	if self.RELEASE_DUPLICATES:
+            for pokemons in caught_pokemon.values():
+                if len(pokemons) > MIN_SIMILAR_POKEMON:
+                    pokemons = sorted(pokemons, lambda x,y: cmp(self.pokemon_names[str(x['pokemon_id'])], self.pokemon_names[str(y['pokemon_id'])]))
+                    last_pokemon = pokemons[0]
+                    for pokemon in pokemons[MIN_SIMILAR_POKEMON:]:
+                        if self.pokemon_names[str(pokemon['pokemon_id'])] == self.pokemon_names[str(last_pokemon['pokemon_id'])]:
+                            # two of the same pokemon, compare and release smaller of the two
+                            if pokemon['cp'] > last_pokemon['cp']:
+                                if pokemon['cp'] * self.DUPLICATE_CP_FORGIVENESS > last_pokemon['cp']:
+                                    # release the lesser!
+                                    self.log.debug("Releasing pokemon: %s", last_pokemon)
+                                    self.log.info("Releasing pokemon: %s IV: %s", self.pokemon_names[str(last_pokemon['pokemon_id'])], pokemonIVPercentage(pokemon))
+                                    self.release_pokemon(pokemon_id = last_pokemon["id"])
+                                last_pokemon = pokemon
+                            else:
+                                if last_pokemon['cp'] * self.DUPLICATE_CP_FORGIVENESS > pokemon['cp']:
+                                    # release the lesser!
+                                    self.log.debug("Releasing pokemon: %s", pokemon)
+                                    self.log.info("Releasing pokemon: %s IV: %s", self.pokemon_names[str(pokemon['pokemon_id'])], pokemonIVPercentage(pokemon))
+                                    self.release_pokemon(pokemon_id = pokemon["id"])
+
+                        else:
+                            last_pokemon = pokemon
+
         return self.call()
 
 
@@ -266,7 +300,7 @@ class PGoApi:
                  capture_status = -1
                  while capture_status != 0 and capture_status != 3:
                      catch_attempt = self.attempt_catch(encounter_id,fort_id)
-                     capture_status = catch_attempt['status']
+                     capture_status = catch_attempt['status'] if catch_attempt is not None else None
                      if capture_status == 1:
                          self.log.debug("Caught Pokemon: : %s", catch_attempt)
                          self.log.info("Caught Pokemon:  %s", self.pokemon_names[str(resp['pokemon_data']['pokemon_id'])])
@@ -275,6 +309,8 @@ class PGoApi:
                      elif capture_status != 2:
                          self.log.debug("Failed Catch: : %s", catch_attempt)
                          self.log.info("Failed to catch Pokemon:  %s", self.pokemon_names[str(resp['pokemon_data']['pokemon_id'])])
+			 if capture_status is None:
+			 	self.log.warn("No more pokeballs")
                          return False
                      sleep(2) # If you want to make it faster, delete this line... would not recommend though
         except Exception as e:
@@ -292,7 +328,7 @@ class PGoApi:
             capture_status = -1
             while capture_status != 0 and capture_status != 3:
                 catch_attempt = self.attempt_catch(encounter_id,spawn_point_id)
-                capture_status = catch_attempt['status']
+                capture_status = catch_attempt['status'] if catch_attempt is not None else None
                 if capture_status == 1:
                     self.log.debug("Caught Pokemon: : %s", catch_attempt)
                     self.log.info("Caught Pokemon:  %s", self.pokemon_names[str(pokemon['pokemon_id'])])
@@ -301,6 +337,8 @@ class PGoApi:
                 elif capture_status != 2:
                     self.log.debug("Failed Catch: : %s", catch_attempt)
                     self.log.info("Failed to Catch Pokemon:  %s", self.pokemon_names[str(pokemon['pokemon_id'])])
+		    if capture_status is None:
+		    	self.log.warn("No more pokeballs")
                 return False
                 sleep(2) # If you want to make it faster, delete this line... would not recommend though
         return False
@@ -368,10 +406,10 @@ class PGoApi:
         while True:
             self.heartbeat()
             sleep(1) # If you want to make it faster, delete this line... would not recommend though
-            self.spin_near_fort()
             while self.catch_near_pokemon():
                 sleep(4) # If you want to make it faster, delete this line... would not recommend though
                 pass
+            self.spin_near_fort()
 
     @staticmethod
     def flatmap(f, items):
