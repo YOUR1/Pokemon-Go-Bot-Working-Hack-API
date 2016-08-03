@@ -37,7 +37,9 @@ MIN_BAD_ITEM_COUNTS = {Inventory.ITEM_POTION: 10,
                        Inventory.ITEM_NANAB_BERRY: 10,
                        Inventory.ITEM_REVIVE: 10}
 MIN_SIMILAR_POKEMON = 1
-
+LOCATION_LOOP = 0
+PREVIOUS_LAT = 0
+PREVIOUS_LONG = 0
 
 class PGoApi:
 
@@ -173,7 +175,46 @@ class PGoApi:
                 while self.catch_near_pokemon():
                     sleep(1) # If you want to make it faster, delete this line... would not recommend though
 
+    def set_previous_lat(self,value):
+        global PREVIOUS_LAT
+        PREVIOUS_LAT = value
 
+    def set_previous_long(self,value):
+        global PREVIOUS_LONG
+        PREVIOUS_LONG = value
+
+    def set_location_loop(self):
+        global LOCATION_LOOP
+        LOCATION_LOOP += 1
+
+    def reset_location_loop(self):
+        global LOCATION_LOOP
+        LOCATION_LOOP = 0
+
+    def check_location(self,lat,long):
+        self.log.info("Previous Latitude : %s",PREVIOUS_LAT)
+        self.log.info("Previous Longitude : %s",PREVIOUS_LONG)
+        self.log.info("Current Latitude : %s",lat)
+        self.log.info("Current Longitude : %s",long)
+        if (PREVIOUS_LAT == 0 and PREVIOUS_LONG == 0):
+             self.set_previous_lat(lat)
+             self.set_previous_long(long)
+             return True
+        else:
+             print("Current Location Loop Counter : ",LOCATION_LOOP)
+             if (lat == PREVIOUS_LAT and long == PREVIOUS_LONG):
+                self.set_location_loop()
+                if (LOCATION_LOOP >= 5) :
+                    self.reset_location_loop()
+                    raise Exception('Location bad loop')
+                # else:
+                #     return True
+             else:
+                self.reset_location_loop()
+                self.set_previous_lat(lat)
+                self.set_previous_long(long)
+                # return True
+        return True
 
     def spin_near_fort(self):
         map_cells = self.nearby_map_objects()['responses']['GET_MAP_OBJECTS']['map_cells']
@@ -181,6 +222,7 @@ class PGoApi:
         destinations = filtered_forts(self._posf,forts)
         if destinations:
             fort = destinations[0]
+            self.check_location(fort['latitude'],fort['longitude'])
             self.log.info("Walking to fort at %s,%s", fort['latitude'], fort['longitude'])
             self.walk_to((fort['latitude'], fort['longitude']))
             position = self._posf # FIXME ?
